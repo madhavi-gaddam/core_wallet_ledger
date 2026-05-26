@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime
 from decimal import Decimal
 
@@ -8,13 +7,16 @@ from app.models.ledger_entry import TransactionType
 
 
 class LedgerEntryRead(BaseModel):
-    id: uuid.UUID
-    wallet_id: uuid.UUID
+    id: int
+    user_id: int
+    wallet_id: int
     transaction_type: TransactionType
     amount: Decimal
+    balance_before: Decimal
+    balance_after: Decimal
     balance_after_transaction: Decimal
+    idempotency_key: str | None
     description: str | None
-    created_at: datetime
+    created_at: datetime | None
 
     model_config = {"from_attributes": True}
-

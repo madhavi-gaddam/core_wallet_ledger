@@ -1,11 +1,11 @@
-import uuid
 from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, InsufficientFundsError, NotFoundError
-from app.models.ledger_entry import TransactionType
+from app.models.ledger_entry import LedgerEntry, TransactionType
+from app.models.wallet import Wallet
 from app.repositories.ledger_repository import LedgerRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.wallet_repository import WalletRepository
@@ -36,29 +36,31 @@ class WalletService:
             self.db.rollback()
             raise ConflictError("User already has a wallet.") from exc
 
-    def get_balance(self, wallet_id: uuid.UUID):
+    def get_balance(self, wallet_id: int):
         wallet = self.wallets.get_by_id(wallet_id)
         if not wallet:
             raise NotFoundError("Wallet not found.")
         return wallet
 
-    def credit(self, wallet_id: uuid.UUID, payload: MoneyOperation):
+    def credit(self, wallet_id: int, payload: MoneyOperation):
         return self._apply_transaction(
             wallet_id=wallet_id,
             transaction_type=TransactionType.CREDIT,
             amount=payload.amount,
+            idempotency_key=payload.idempotency_key,
             description=payload.description,
         )
 
-    def debit(self, wallet_id: uuid.UUID, payload: MoneyOperation):
+    def debit(self, wallet_id: int, payload: MoneyOperation):
         return self._apply_transaction(
             wallet_id=wallet_id,
             transaction_type=TransactionType.DEBIT,
             amount=payload.amount,
+            idempotency_key=payload.idempotency_key,
             description=payload.description,
         )
 
-    def get_transactions(self, wallet_id: uuid.UUID):
+    def get_transactions(self, wallet_id: int):
         wallet = self.wallets.get_by_id(wallet_id)
         if not wallet:
             raise NotFoundError("Wallet not found.")
@@ -66,39 +68,71 @@ class WalletService:
 
     def _apply_transaction(
         self,
-        wallet_id: uuid.UUID,
+        wallet_id: int,
         transaction_type: TransactionType,
         amount: Decimal,
+        idempotency_key: str,
         description: str | None,
-    ):
+    ) -> tuple[Wallet, LedgerEntry]:
         try:
-            wallet = self.wallets.get_by_id_for_update(wallet_id)
-            if not wallet:
-                raise NotFoundError("Wallet not found.")
+            with self.db.begin():
+                # Row-level locking serializes all balance changes for this wallet
+                # across threads, FastAPI workers, and separate app instances.
+                wallet = self.wallets.get_by_id_for_update(wallet_id)
+                if not wallet:
+                    raise NotFoundError("Wallet not found.")
 
-            if transaction_type == TransactionType.DEBIT and wallet.balance < amount:
-                raise InsufficientFundsError("Insufficient wallet balance.")
+                existing_entry = self.ledger.get_by_idempotency_key(idempotency_key)
+                if existing_entry:
+                    self._validate_idempotent_replay(
+                        existing_entry=existing_entry,
+                        wallet_id=wallet_id,
+                        transaction_type=transaction_type,
+                        amount=amount,
+                    )
+                    return wallet, existing_entry
 
-            if transaction_type == TransactionType.CREDIT:
-                wallet.balance += amount
-            else:
-                wallet.balance -= amount
+                if transaction_type == TransactionType.DEBIT and wallet.balance < amount:
+                    raise InsufficientFundsError("Insufficient wallet balance.")
 
-            entry = self.ledger.create(
-                wallet_id=wallet.id,
-                transaction_type=transaction_type,
-                amount=amount,
-                balance_after_transaction=wallet.balance,
-                description=description,
-            )
-            self.db.commit()
+                balance_before = wallet.balance
+                if transaction_type == TransactionType.CREDIT:
+                    wallet.balance += amount
+                else:
+                    wallet.balance -= amount
+
+                entry = self.ledger.create(
+                    user_id=wallet.user_id,
+                    wallet_id=wallet.id,
+                    transaction_type=transaction_type,
+                    amount=amount,
+                    balance_before=balance_before,
+                    balance_after=wallet.balance,
+                    idempotency_key=idempotency_key,
+                    description=description,
+                )
+
             self.db.refresh(wallet)
             self.db.refresh(entry)
             return wallet, entry
-        except (NotFoundError, InsufficientFundsError):
-            self.db.rollback()
+        except (NotFoundError, InsufficientFundsError, ConflictError):
             raise
-        except Exception:
+        except IntegrityError as exc:
             self.db.rollback()
-            raise
+            raise ConflictError("Idempotency key already exists.") from exc
 
+    @staticmethod
+    def _validate_idempotent_replay(
+        existing_entry: LedgerEntry,
+        wallet_id: int,
+        transaction_type: TransactionType,
+        amount: Decimal,
+    ) -> None:
+        if (
+            existing_entry.wallet_id != wallet_id
+            or existing_entry.transaction_type != transaction_type
+            or existing_entry.amount != amount
+        ):
+            raise ConflictError(
+                "Idempotency key was already used for a different transaction."
+            )

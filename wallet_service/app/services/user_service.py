@@ -15,12 +15,14 @@ class UserService:
         if self.users.get_by_email(payload.email):
             raise ConflictError("A user with this email already exists.")
 
+        if self.users.get_by_username(payload.username):
+            raise ConflictError("A user with this username already exists.")
+
         try:
-            user = self.users.create(name=payload.name, email=str(payload.email))
+            user = self.users.create(username=payload.username, email=str(payload.email))
             self.db.commit()
             self.db.refresh(user)
             return user
         except IntegrityError as exc:
             self.db.rollback()
             raise ConflictError("A user with this email already exists.") from exc
-

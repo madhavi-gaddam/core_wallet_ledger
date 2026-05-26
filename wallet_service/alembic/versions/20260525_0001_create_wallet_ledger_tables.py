@@ -1,4 +1,4 @@
-"""create wallet ledger tables
+"""baseline existing wallet ledger tables
 
 Revision ID: 20260525_0001
 Revises:
@@ -8,8 +8,6 @@ Create Date: 2026-05-25 00:01:00.000000
 from collections.abc import Sequence
 
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 revision: str = "20260525_0001"
 down_revision: str | None = None
@@ -18,90 +16,51 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    transaction_type = postgresql.ENUM(
-        "CREDIT",
-        "DEBIT",
-        name="transaction_type",
-        create_type=False,
-    )
-    transaction_type.create(op.get_bind(), checkfirst=True)
+    """Create the original integer-ID schema only when it is missing.
 
-    op.create_table(
-        "users",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("name", sa.String(length=120), nullable=False),
-        sa.Column("email", sa.String(length=255), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("email"),
-    )
-    op.create_index("ix_users_email", "users", ["email"], unique=False)
+    Your existing database already has these tables, so this migration becomes
+    a baseline marker there instead of creating duplicate Phase 1 tables.
+    """
 
-    op.create_table(
-        "wallets",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column(
-            "balance",
-            sa.Numeric(precision=18, scale=2),
-            nullable=False,
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("user_id"),
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(80) NOT NULL UNIQUE,
+            email VARCHAR(120) NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT now()
+        )
+        """
     )
-
-    op.create_table(
-        "ledger_entries",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("wallet_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("transaction_type", transaction_type, nullable=False),
-        sa.Column("amount", sa.Numeric(precision=18, scale=2), nullable=False),
-        sa.Column(
-            "balance_after_transaction",
-            sa.Numeric(precision=18, scale=2),
-            nullable=False,
-        ),
-        sa.Column("description", sa.String(length=255), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(["wallet_id"], ["wallets.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wallets (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+            balance NUMERIC(15, 2) NOT NULL,
+            created_at TIMESTAMP DEFAULT now(),
+            updated_at TIMESTAMP DEFAULT now()
+        )
+        """
     )
-    op.create_index(
-        "ix_ledger_entries_wallet_id",
-        "ledger_entries",
-        ["wallet_id"],
-        unique=False,
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ledger (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            wallet_id INTEGER NOT NULL REFERENCES wallets(id),
+            transaction_type VARCHAR(10) NOT NULL,
+            amount NUMERIC(15, 2) NOT NULL,
+            balance_before NUMERIC(15, 2) NOT NULL,
+            balance_after NUMERIC(15, 2) NOT NULL,
+            description VARCHAR(255),
+            created_at TIMESTAMP DEFAULT now()
+        )
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_ledger_entries_wallet_id", table_name="ledger_entries")
-    op.drop_table("ledger_entries")
-    op.drop_table("wallets")
-    op.drop_index("ix_users_email", table_name="users")
-    op.drop_table("users")
-
-    transaction_type = postgresql.ENUM(
-        "CREDIT",
-        "DEBIT",
-        name="transaction_type",
-        create_type=False,
-    )
-    transaction_type.drop(op.get_bind(), checkfirst=True)
+    op.execute("DROP TABLE IF EXISTS ledger")
+    op.execute("DROP TABLE IF EXISTS wallets")
+    op.execute("DROP TABLE IF EXISTS users")

@@ -28,6 +28,16 @@ class InsufficientFundsError(AppException):
     error_code = "insufficient_funds"
 
 
+class UnauthorizedError(AppException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    error_code = "unauthorized"
+
+
+class ForbiddenError(AppException):
+    status_code = status.HTTP_403_FORBIDDEN
+    error_code = "forbidden"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppException)
     async def app_exception_handler(
@@ -36,5 +46,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.message, "error_code": exc.error_code},
+            headers={"WWW-Authenticate": "Bearer"}
+            if isinstance(exc, UnauthorizedError)
+            else None,
         )
-

@@ -27,7 +27,8 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username VARCHAR(80) NOT NULL UNIQUE,
-            email VARCHAR(120) NOT NULL UNIQUE,
+            email VARCHAR(120) UNIQUE,
+            hashed_password VARCHAR(255),
             created_at TIMESTAMP DEFAULT now()
         )
         """

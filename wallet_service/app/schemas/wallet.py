@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class WalletCreate(BaseModel):
-    user_id: int
+    pass
 
 
 class MoneyOperation(BaseModel):
